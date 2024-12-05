@@ -10,8 +10,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Define model ID and prompt
 model_id = "stabilityai/stable-diffusion-2-base"
-# prompt = "A serene landscape with mountains and a lake at sunset"
-prompt = "A surreal nighttime scene of a quiet cityscape bathed in moonlight, with a mysterious submarine surfacing in the middle of the city streets. The submarine appears sleek and futuristic, blending seamlessly with its urban surroundings. Its periscope tilts toward a solitary figure standing on a balcony, looking down at the city. The atmosphere is dreamy, with soft, glowing lights emanating from the submarine and subtle ripples in the air suggesting it is not entirely bound by water."
+prompt = "A serene landscape with mountains and a lake at sunset"
+
 # Load the tokenizer and text encoder
 tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
 text_encoder = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder").to(device)
@@ -22,10 +22,10 @@ unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet").to(devic
 
 # Inference parameters
 num_inference_steps = 50
-height = 512 #768 #1024 512
-width = 512 #768 #1024 512
+height = 512
+width = 512
 batch_size = 1
-num_variations = 150
+num_variations = 3
 base_seed = 42
 
 # Tokenize and encode the prompt
@@ -53,8 +53,7 @@ for i in range(num_variations):
     scheduler.set_timesteps(num_inference_steps)
     
     # Create a new initial latent vector for each variation
-    seed = base_seed + i
-    # seed = base_seed
+    seed = base_seed #+ i
     generator = torch.Generator(device=device).manual_seed(seed)
     latents = torch.randn(
         (batch_size, unet.in_channels, height // 8, width // 8),
@@ -63,16 +62,26 @@ for i in range(num_variations):
     )
     latents = latents * scheduler.init_noise_sigma
 
+    # Define at which step to start adding random walk (e.g., after half of the steps)
+    start_random_walk_step = 5 #num_inference_steps // 2
+    random_walk_scale = 0.05 #0.05  # Adjust this for more or less variability
+
     # Denoising loop
-    for t in tqdm(scheduler.timesteps, desc=f"Generating variation {i+1}/{num_variations}"):
+    for step_index, t in enumerate(tqdm(scheduler.timesteps, desc=f"Generating variation {i+1}/{num_variations}")):
         # Scale the model input according to the scheduler
         latent_model_input = scheduler.scale_model_input(latents, t)
 
         with torch.no_grad():
             noise_pred = unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
-        # Step the scheduler
+        # Perform the standard scheduler step
         latents = scheduler.step(noise_pred, t, latents).prev_sample
+
+        # After a certain number of steps, start adding random noise
+        if step_index > start_random_walk_step:
+            # Add a small random perturbation to latents
+            random_noise = torch.randn_like(latents) * random_walk_scale
+            latents = latents + random_noise
 
     # Decode the latents
     with torch.no_grad():
